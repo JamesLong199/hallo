@@ -17,11 +17,12 @@ These blocks are used to construct the 3D UNet architecture for video-related ta
 import torch
 from einops import rearrange
 from torch import nn
+from torch import profiler
 
 from .motion_module import get_motion_module
 from .resnet import Downsample3D, ResnetBlock3D, Upsample3D
 from .transformer_3d import Transformer3DModel
-
+import time
 
 def get_down_block(
     down_block_type,
@@ -415,6 +416,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         lip_mask=None,
         audio_embedding=None,
         motion_scale=None,
+        block_name='unknown_mid_block',
     ):
         """
         Forward pass for the UNetMidBlock3DCrossAttn class.
@@ -433,15 +435,28 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         Returns:
             Tensor: The output tensor after passing through the UNetMidBlock3DCrossAttn layers.
         """
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
         hidden_states = self.resnets[0](hidden_states, temb)
-        for attn, resnet, audio_module, motion_module in zip(
+        end_event.record()
+        end_event.synchronize()
+        time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+        print(f"UNetMidBlock3DCrossAttn Resnet 0 execution time: {time_elapsed} seconds")
+        for i, (attn, resnet, audio_module, motion_module) in enumerate(zip(
             self.attentions, self.resnets[1:], self.audio_modules, self.motion_modules
-        ):
+        )):
+            start_event.record()
             hidden_states, motion_frame = attn(
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 return_dict=False,
+                block_name=f'{block_name}_layer_{i}',
             )  # .sample
+            end_event.record()
+            end_event.synchronize()
+            time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+            print(f"UNetMidBlock3DCrossAttn Attention {i} execution time: {time_elapsed:.4f} seconds")
             if len(motion_frame[0]) > 0:
                 # if motion_frame[0][0].numel() > 0:
                 motion_frames = motion_frame[0][0]
@@ -462,6 +477,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
 
             n_motion_frames = motion_frames.size(2)
             if audio_module is not None:
+                start_event.record()
                 hidden_states = (
                     audio_module(
                         hidden_states,
@@ -472,9 +488,15 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                         lip_mask=lip_mask,
                         motion_scale=motion_scale,
                         return_dict=False,
+                        block_name=f'{block_name}_layer_{i}',
                     )
                 )[0]  # .sample
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"UNetMidBlock3DCrossAttn Audio module {i} execution time: {time_elapsed:.4f} seconds")
             if motion_module is not None:
+                start_event.record()
                 motion_frames = motion_frames.to(
                     device=hidden_states.device, dtype=hidden_states.dtype
                 )
@@ -485,11 +507,21 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     else hidden_states
                 )
                 hidden_states = motion_module(
-                    _hidden_states, encoder_hidden_states=encoder_hidden_states
+                    _hidden_states, encoder_hidden_states=encoder_hidden_states, 
+                    block_name=f'{block_name}_layer_{i}',
                 )
                 hidden_states = hidden_states[:, :, n_motion_frames:]
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"UNetMidBlock3DCrossAttn Motion module {i} execution time: {time_elapsed:.4f} seconds")
 
+            start_event.record()
             hidden_states = resnet(hidden_states, temb)
+            end_event.record()
+            end_event.synchronize()
+            time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+            print(f"UNetMidBlock3DCrossAttn Resnet {i} execution time: {time_elapsed:.4f} seconds")
 
         return hidden_states
 
@@ -567,6 +599,7 @@ class CrossAttnDownBlock3D(nn.Module):
             )
             if dual_cross_attention:
                 raise NotImplementedError
+
             attentions.append(
                 Transformer3DModel(
                     attn_num_head_channels,
@@ -582,6 +615,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     unet_use_temporal_attention=unet_use_temporal_attention,
                 )
             )
+
             # TODO:检查维度
             audio_modules.append(
                 Transformer3DModel(
@@ -618,6 +652,8 @@ class CrossAttnDownBlock3D(nn.Module):
         self.audio_modules = nn.ModuleList(audio_modules)
         self.motion_modules = nn.ModuleList(motion_modules)
 
+        # print('unet_3d_blocks 643 self.attentions:', self.attentions)
+
         if add_downsample:
             self.downsamplers = nn.ModuleList(
                 [
@@ -646,6 +682,7 @@ class CrossAttnDownBlock3D(nn.Module):
         lip_mask=None,
         audio_embedding=None,
         motion_scale=None,
+        block_name='unknown_downblock',
     ):
         """
         Defines the forward pass for the CrossAttnDownBlock3D class.
@@ -672,13 +709,16 @@ class CrossAttnDownBlock3D(nn.Module):
         --     torch.Tensor
             The output tensor from the block.
         """
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
         output_states = ()
 
-        for _, (resnet, attn, audio_module, motion_module) in enumerate(
+        for i, (resnet, attn, audio_module, motion_module) in enumerate(
             zip(self.resnets, self.attentions, self.audio_modules, self.motion_modules)
         ):
             # self.gradient_checkpointing = False
             if self.training and self.gradient_checkpointing:
+                print('CrossAttnDownBlock3D Layer in training mode')
 
                 def create_custom_forward(module, return_dict=None):
                     def custom_forward(*inputs):
@@ -688,17 +728,45 @@ class CrossAttnDownBlock3D(nn.Module):
                         return module(*inputs)
 
                     return custom_forward
-
+                start_event.record()
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet), hidden_states, temb
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnDownBlock3D Layer {i} resnet execution time: {time_elapsed} seconds")
 
-                motion_frames = []
+                motion_frames = []  
+                start_event.record()    
+                # print('unet_3d_blocks 724 hidden_states.shape:', hidden_states.shape)
+                # print('unet_3d_blocks 725 encoder_hidden_states.shape:', encoder_hidden_states.shape)
+                # hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
+                #     create_custom_forward(attn, return_dict=False),
+                #     hidden_states,
+                #     encoder_hidden_states,
+                # )
+                
+                # Store the block_name locally
+                current_block_name = f'{block_name}_layer_{i}'
+                
+                # Call the attention module directly with block_name
+                # This avoids passing block_name through checkpoint
+                def attn_with_block_name(*args, **kwargs):
+                    return attn(*args, block_name=current_block_name, **kwargs)
+                
+                # Now checkpoint without passing block_name
                 hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn, return_dict=False),
+                    create_custom_forward(attn_with_block_name, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
                 )
+
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnDownBlock3D Layer {i} attn execution time: {time_elapsed} seconds")
+
                 if len(motion_frame[0]) > 0:
                     motion_frames = motion_frame[0][0]
                     # motion_frames = torch.cat(motion_frames, dim=0)
@@ -720,9 +788,16 @@ class CrossAttnDownBlock3D(nn.Module):
                 n_motion_frames = motion_frames.size(2)
 
                 if audio_module is not None:
+                    start_event.record()
                     # audio_embedding = audio_embedding
+                    # print('unet_3d_blocks 758 hidden_states.shape:', hidden_states.shape)
+                    # print('unet_3d_blocks 759 audio_embedding.shape:', audio_embedding.shape)
+                    
+                    def audio_module_with_block_name(*args, **kwargs):
+                        return audio_module(*args, block_name=f'{block_name}_layer_{i}', **kwargs)
+                    
                     hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(audio_module, return_dict=False),
+                        create_custom_forward(audio_module_with_block_name, return_dict=False),
                         hidden_states,
                         audio_embedding,
                         attention_mask,
@@ -732,19 +807,52 @@ class CrossAttnDownBlock3D(nn.Module):
                         motion_scale,
                     )[0]
 
+                    # hidden_states = torch.utils.checkpoint.checkpoint(
+                    #     create_custom_forward(audio_module, return_dict=False),
+                    #     hidden_states,
+                    #     audio_embedding,
+                    #     attention_mask,
+                    #     full_mask,
+                    #     face_mask,
+                    #     lip_mask,
+                    #     motion_scale,
+                    # )[0]
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"CrossAttnDownBlock3D Layer {i} audio_module execution time: {time_elapsed} seconds")
+
                 # add motion module
                 if motion_module is not None:
                     motion_frames = motion_frames.to(
-                        device=hidden_states.device, dtype=hidden_states.dtype
+                        device=hidden_states.device, dtype=hidden_states.dtype,
                     )
                     _hidden_states = torch.cat(
                         [motion_frames, hidden_states], dim=2
                     )  # if n_motion_frames > 0 else hidden_states
+
+                    start_event.record()
+                    # print('unet_3d_blocks 783 _hidden_states.shape:', _hidden_states.shape)
+                    # print('unet_3d_blocks 784 encoder_hidden_states.shape:', encoder_hidden_states.shape)
+                    
+                    def motion_module_with_block_name(*args, **kwargs):
+                        return motion_module(*args, block_name=f'{block_name}_layer_{i}', **kwargs)
+
                     hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(motion_module),
+                        create_custom_forward(motion_module_with_block_name),
                         _hidden_states,
                         encoder_hidden_states,
                     )
+
+                    # hidden_states = torch.utils.checkpoint.checkpoint(
+                    #     create_custom_forward(motion_module),
+                    #     _hidden_states,
+                    #     encoder_hidden_states,
+                    # )
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"CrossAttnDownBlock3D Layer {i} Motion module execution time: {time_elapsed} seconds")
                     hidden_states = hidden_states[:, :, n_motion_frames:]
 
             else:
@@ -763,7 +871,7 @@ class CrossAttnDownBlock3D(nn.Module):
                         lip_mask=lip_mask,
                         return_dict=False,
                     )[0]
-                # add motion module
+                    # add motion module
                 if motion_module is not None:
                     hidden_states = motion_module(
                         hidden_states, encoder_hidden_states=encoder_hidden_states
@@ -832,7 +940,6 @@ class DownBlock3D(nn.Module):
         super().__init__()
         resnets = []
         motion_modules = []
-
         # use_motion_module = False
         for i in range(num_layers):
             in_channels = in_channels if i == 0 else out_channels
@@ -900,7 +1007,10 @@ class DownBlock3D(nn.Module):
         """
         output_states = ()
 
-        for resnet, motion_module in zip(self.resnets, self.motion_modules):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        for i, (resnet, motion_module) in enumerate(zip(self.resnets, self.motion_modules)):
             # print(f"DownBlock3D {self.gradient_checkpointing = }")
             if self.training and self.gradient_checkpointing:
 
@@ -909,15 +1019,25 @@ class DownBlock3D(nn.Module):
                         return module(*inputs)
 
                     return custom_forward
-
+                start_event.record()        
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet), hidden_states, temb
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"DownBlock3D Layer {i} resnet execution time: {time_elapsed:.4f} seconds")
 
             else:
+                start_event.record()
                 hidden_states = resnet(hidden_states, temb)
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"DownBlock3D Layer {i} ResnetBlock3D execution time: {time_elapsed:.4f} seconds")
 
                 # add motion module
+                start_event.record()    
                 hidden_states = (
                     motion_module(
                         hidden_states, encoder_hidden_states=encoder_hidden_states
@@ -925,6 +1045,10 @@ class DownBlock3D(nn.Module):
                     if motion_module is not None
                     else hidden_states
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"DownBlock3D Layer {i} Motion module execution time: {time_elapsed:.4f} seconds")
 
             output_states += (hidden_states,)
 
@@ -1102,6 +1226,7 @@ class CrossAttnUpBlock3D(nn.Module):
         lip_mask=None,
         audio_embedding=None,
         motion_scale=None,
+        block_name='unknown_upblock',
     ):
         """
         Forward pass for the CrossAttnUpBlock3D class.
@@ -1122,7 +1247,10 @@ class CrossAttnUpBlock3D(nn.Module):
         Returns:
             Tensor: The output tensor after passing through the CrossAttnUpBlock3D.
         """
-        for _, (resnet, attn, audio_module, motion_module) in enumerate(
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        for i, (resnet, attn, audio_module, motion_module) in enumerate(
             zip(self.resnets, self.attentions, self.audio_modules, self.motion_modules)
         ):
             # pop res hidden states
@@ -1141,16 +1269,60 @@ class CrossAttnUpBlock3D(nn.Module):
 
                     return custom_forward
 
+                start_event.record()
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet), hidden_states, temb
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnUpBlock3D Layer {i} resnet execution time: {time_elapsed:.4f} seconds")
 
                 motion_frames = []
+                # with profiler.profile(
+                #     activities=[profiler.ProfilerActivity.CPU, profiler.ProfilerActivity.CUDA],
+                #     # schedule=profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat),
+                #     # on_trace_ready=profiler.tensorboard_trace_handler(args.output_dir / 'profile'),
+                #     # record_shapes=True,
+                #     # profile_memory=True,
+                #     # with_stack=True,
+                #     # with_flops=True,
+                # ) as prof:
+                start_event.record()
+                # hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
+                #     create_custom_forward(attn, return_dict=False),
+                #     hidden_states,
+                #     encoder_hidden_states,
+                # )
+
+                # Store the block_name locally
+                current_block_name = f'{block_name}_layer_{i}'
+                
+                # Call the attention module directly with block_name
+                # This avoids passing block_name through checkpoint
+                def attn_with_block_name(*args, **kwargs):
+                    return attn(*args, block_name=current_block_name, **kwargs)
+                
+                # Now checkpoint without passing block_name
                 hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn, return_dict=False),
+                    create_custom_forward(attn_with_block_name, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
                 )
+
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnUpBlock3D Layer {i} attn execution time: {time_elapsed:.4f} seconds")
+                    # torch.cuda.synchronize()
+                    # prof.step()
+                
+                # self_cuda_table = prof.key_averages(group_by_input_shape=True).table(
+                #     sort_by="self_cuda_time_total", row_limit=20)
+                # cuda_table = prof.key_averages(group_by_input_shape=True).table(sort_by="cuda_time_total", row_limit=20)
+                # print(f"Self CUDA results:\n{self_cuda_table}")
+                # print(f"Total CUDA results:\n{cuda_table}")
+                
                 if len(motion_frame[0]) > 0:
                     motion_frames = motion_frame[0][0]
                     # motion_frames = torch.cat(motion_frames, dim=0)
@@ -1172,8 +1344,12 @@ class CrossAttnUpBlock3D(nn.Module):
 
                 if audio_module is not None:
                     # audio_embedding = audio_embedding
+                    start_event.record()
+                    def audio_module_with_block_name(*args, **kwargs):
+                        return audio_module(*args, block_name=f'{block_name}_layer_{i}', **kwargs)
+
                     hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(audio_module, return_dict=False),
+                        create_custom_forward(audio_module_with_block_name, return_dict=False),
                         hidden_states,
                         audio_embedding,
                         attention_mask,
@@ -1182,6 +1358,21 @@ class CrossAttnUpBlock3D(nn.Module):
                         lip_mask,
                         motion_scale,
                     )[0]
+
+                    # hidden_states = torch.utils.checkpoint.checkpoint(
+                    #     create_custom_forward(audio_module, return_dict=False),
+                    #     hidden_states,
+                    #     audio_embedding,
+                    #     attention_mask,
+                    #     full_mask,
+                    #     face_mask,
+                    #     lip_mask,
+                    #     motion_scale,
+                    # )[0]
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"CrossAttnUpBlock3D Layer {i} audio_module execution time: {time_elapsed:.4f} seconds")
 
                 # add motion module
                 if motion_module is not None:
@@ -1194,21 +1385,47 @@ class CrossAttnUpBlock3D(nn.Module):
                         if n_motion_frames > 0
                         else hidden_states
                     )
+                    start_event.record()
+                    def motion_module_with_block_name(*args, **kwargs):
+                        return motion_module(*args, block_name=f'{block_name}_layer_{i}', **kwargs)
+
                     hidden_states = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(motion_module),
+                        create_custom_forward(motion_module_with_block_name),
                         _hidden_states,
                         encoder_hidden_states,
                     )
+
+                    # hidden_states = torch.utils.checkpoint.checkpoint(
+                    #     create_custom_forward(motion_module),
+                    #     _hidden_states,
+                    #     encoder_hidden_states,
+                    # )
+
                     hidden_states = hidden_states[:, :, n_motion_frames:]
-            else:
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"CrossAttnUpBlock3D Layer {i} Motion module execution time: {time_elapsed:.4f} seconds")
+            else:   
+                start_event.record()
                 hidden_states = resnet(hidden_states, temb)
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnUpBlock3D Layer {i} ResnetBlock3D execution time: {time_elapsed:.4f} seconds")
+
+                start_event.record()
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                 ).sample
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnUpBlock3D Layer {i} Transformer3DModel execution time: {time_elapsed:.4f} seconds")
 
                 if audio_module is not None:
-
+                    start_event.record()
                     hidden_states = (
                         audio_module(
                             hidden_states,
@@ -1219,7 +1436,12 @@ class CrossAttnUpBlock3D(nn.Module):
                             lip_mask=lip_mask,
                         )
                     ).sample
-                # add motion module
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"CrossAttnUpBlock3D Layer {i} Transformer3DModel execution time: {time_elapsed:.4f} seconds")
+                # add motion module 
+                start_event.record()
                 hidden_states = (
                     motion_module(
                         hidden_states, encoder_hidden_states=encoder_hidden_states
@@ -1227,6 +1449,10 @@ class CrossAttnUpBlock3D(nn.Module):
                     if motion_module is not None
                     else hidden_states
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"CrossAttnUpBlock3D Layer {i} Motion module execution time: {time_elapsed:.4f} seconds")
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
@@ -1366,7 +1592,10 @@ class UpBlock3D(nn.Module):
         Returns:
             Tensor: The output tensor after passing through the UpBlock3D layers.
         """
-        for resnet, motion_module in zip(self.resnets, self.motion_modules):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        for i, (resnet, motion_module) in enumerate(zip(self.resnets, self.motion_modules)):
             # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
@@ -1381,11 +1610,23 @@ class UpBlock3D(nn.Module):
 
                     return custom_forward
 
+                start_event.record()
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(resnet), hidden_states, temb
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"UpBlock3D Layer {i} resnet execution time: {time_elapsed:.4f} seconds")
             else:
+                start_event.record()
                 hidden_states = resnet(hidden_states, temb)
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"UpBlock3D Layer {i} ResnetBlock3D execution time: {time_elapsed:.4f} seconds")
+
+                start_event.record()
                 hidden_states = (
                     motion_module(
                         hidden_states, encoder_hidden_states=encoder_hidden_states
@@ -1393,6 +1634,10 @@ class UpBlock3D(nn.Module):
                     if motion_module is not None
                     else hidden_states
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"UpBlock3D Layer {i} Motion module execution time: {time_elapsed:.4f} seconds")
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:

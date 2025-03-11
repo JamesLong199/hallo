@@ -14,7 +14,8 @@ import torch
 from einops import rearrange
 
 from .attention import BasicTransformerBlock, TemporalBasicTransformerBlock
-
+import time
+from torch.profiler import profile, record_function, ProfilerActivity
 
 def torch_dfs(model: torch.nn.Module):
     """
@@ -181,12 +182,17 @@ class ReferenceAttentionControl:
             cross_attention_kwargs: Dict[str, Any] = None,
             class_labels: Optional[torch.LongTensor] = None,
             video_length=None,
+            block_name='unknown_block',
         ):
+            
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+
             gate_msa = None
             shift_mlp = None
             scale_mlp = None
             gate_mlp = None
-
+            start_event.record()
             if self.use_ada_layer_norm:  # False
                 norm_hidden_states = self.norm1(hidden_states, timestep)
             elif self.use_ada_layer_norm_zero:
@@ -205,6 +211,10 @@ class ReferenceAttentionControl:
             else:
                 norm_hidden_states = self.norm1(hidden_states)
 
+            end_event.record()
+            end_event.synchronize()
+            time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+            print(f"mutual_self_attention norm1 took {time_elapsed} seconds", flush=True)
             # 1. Self-Attention
             # self.only_cross_attention = False
             cross_attention_kwargs = (
@@ -231,7 +241,7 @@ class ReferenceAttentionControl:
                         **cross_attention_kwargs,
                     )
                 if MODE == "read":
-
+                    # start_event.record()
                     bank_fea = [
                         rearrange(
                             rearrange(
@@ -253,15 +263,36 @@ class ReferenceAttentionControl:
                     modify_norm_hidden_states = torch.cat(
                         [norm_hidden_states] + bank_fea, dim=1
                     )
+                    # end_event.record()
+                    # end_event.synchronize()
+                    # time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    # print(f"mutual_self_attention before attn1 took {time_elapsed} seconds", flush=True)
+                    start_event.record()
                     hidden_states_uc = (
                         self.attn1(
                             norm_hidden_states,
                             encoder_hidden_states=modify_norm_hidden_states,
                             attention_mask=attention_mask,
+                            # save_attention=True,
+                            # block_name='attn1',
+                            # max_attention_size=512,  # Adjust this value based on your GPU memory
+                            # spatial_attention=True,
+                            # spatial_size=64,
+                            # grid_size=32,
+                            attention_name=block_name+'_attn1',
                         )
                         + hidden_states
                     )
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"mutual_self_attention attn1 took {time_elapsed} seconds", flush=True)
+                    # print(f"mutual_self_attention attn1 scores shape: {attn1_scores.shape}", flush=True)
+            
+                    # assert 0
+
                     if do_classifier_free_guidance:
+                        # start_event.record()
                         hidden_states_c = hidden_states_uc.clone()
                         _uc_mask = uc_mask.clone()
                         if hidden_states.shape[0] != _uc_mask.shape[0]:
@@ -273,14 +304,46 @@ class ReferenceAttentionControl:
                                 .to(device)
                                 .bool()
                             )
+                        # print(f"mutual_self_attention before cfg attn1 took {time.time() - start_time} seconds", flush=True)
+                        start_event.record()
+                        # masked_norm_hidden_states = norm_hidden_states[_uc_mask]
+                        # masked_hidden_states = hidden_states[_uc_mask]
+                        # print(f"mutual_self_attention mask hidden states took {time.time() - start_time} seconds", flush=True)
+                        # start_event.record()
+                        # temp = (
+                        #     self.attn1(
+                        #         masked_norm_hidden_states,
+                        #         encoder_hidden_states=masked_norm_hidden_states,
+                        #         attention_mask=attention_mask,
+                        #     )
+                        #     + masked_hidden_states
+                        # )
+                        # temp = (
+                        #     self.attn1(
+                        #         norm_hidden_states[_uc_mask],
+                        #         encoder_hidden_states=norm_hidden_states[_uc_mask],
+                        #         attention_mask=attention_mask,
+                        #     )
+                        #     + hidden_states[_uc_mask]
+                        # )
+                        # print(f"mutual_self_attention cfg attn1 computation took {time.time() - start_time} seconds", flush=True)
+                        # start_event.record()
+                        # hidden_states_c[_uc_mask] = temp
+                        # print(f"mutual_self_attention cfg attn1 assignment took {time.time() - start_time} seconds", flush=True)
+
                         hidden_states_c[_uc_mask] = (
                             self.attn1(
                                 norm_hidden_states[_uc_mask],
                                 encoder_hidden_states=norm_hidden_states[_uc_mask],
                                 attention_mask=attention_mask,
+                                attention_name=block_name+'_cfg_attn1',
                             )
                             + hidden_states[_uc_mask]
                         )
+                        end_event.record()
+                        end_event.synchronize()
+                        time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                        print(f"mutual_self_attention cfg attn1 took {time_elapsed} seconds", flush=True)
                         hidden_states = hidden_states_c.clone()
                     else:
                         hidden_states = hidden_states_uc
@@ -288,23 +351,40 @@ class ReferenceAttentionControl:
                     # self.bank.clear()
                     if self.attn2 is not None:
                         # Cross-Attention
+                        start_event.record()
                         norm_hidden_states = (
                             self.norm2(hidden_states, timestep)
                             if self.use_ada_layer_norm
                             else self.norm2(hidden_states)
                         )
+                        end_event.record()
+                        end_event.synchronize()
+                        time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                        print(f"mutual_self_attention norm2 took {time_elapsed} seconds", flush=True)
+                        start_event.record()
+                        # print(f"mutual_self_attention attn2 norm_hidden_states shape: {norm_hidden_states.shape}", flush=True)
+                        # print(f"mutual_self_attention attn2 encoder_hidden_states shape: {encoder_hidden_states.shape}", flush=True)
                         hidden_states = (
                             self.attn2(
                                 norm_hidden_states,
                                 encoder_hidden_states=encoder_hidden_states,
                                 attention_mask=attention_mask,
+                                attention_name=block_name+'_attn2',
                             )
                             + hidden_states
                         )
-
+                        end_event.record()
+                        end_event.synchronize()
+                        time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                        print(f"mutual_self_attention attn2 took {time_elapsed} seconds", flush=True)
                     # Feed-forward
+                    start_event.record()
                     hidden_states = self.ff(self.norm3(
                         hidden_states)) + hidden_states
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"mutual_self_attention ff took {time_elapsed} seconds", flush=True)
 
                     # Temporal-Attention
                     if self.unet_use_temporal_attention:

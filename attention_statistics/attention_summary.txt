@@ -1,0 +1,99 @@
+Summary of Attention Statistics Across Files
+==========================================
+
+File: cross_attn_upblock_3_layer_2_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+Overall average attention sum: A=0.925391, B=0.074609
+Overall ratio A/B: 12.403140
+
+File: cross_attn_upblock_3_layer_1_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+Overall average attention sum: A=0.882348, B=0.117653
+Overall ratio A/B: 7.499604
+
+File: cross_attn_upblock_3_layer_0_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+Overall average attention sum: A=0.920100, B=0.079901
+Overall ratio A/B: 11.515522
+
+File: cross_attn_upblock_2_layer_2_spatial_0_attn1
+Feature size: 32x32
+Number of heads: 8
+Overall average attention sum: A=0.922747, B=0.077253
+Overall ratio A/B: 11.944403
+
+File: cross_attn_upblock_2_layer_1_spatial_0_attn1
+Feature size: 32x32
+Number of heads: 8
+Overall average attention sum: A=0.896620, B=0.103380
+Overall ratio A/B: 8.673089
+
+File: cross_attn_upblock_2_layer_0_spatial_0_attn1
+Feature size: 32x32
+Number of heads: 8
+Overall average attention sum: A=0.930449, B=0.069551
+Overall ratio A/B: 13.377950
+
+File: cross_attn_upblock_1_layer_2_spatial_0_attn1
+Feature size: 16x16
+Number of heads: 8
+Overall average attention sum: A=0.922733, B=0.077267
+Overall ratio A/B: 11.942060
+
+File: cross_attn_upblock_1_layer_1_spatial_0_attn1
+Feature size: 16x16
+Number of heads: 8
+Overall average attention sum: A=0.897754, B=0.102246
+Overall ratio A/B: 8.780336
+
+File: cross_attn_upblock_1_layer_0_spatial_0_attn1
+Feature size: 16x16
+Number of heads: 8
+Overall average attention sum: A=0.853482, B=0.146518
+Overall ratio A/B: 5.825094
+
+File: mid_block_layer_0_spatial_0_attn1
+Feature size: 8x8
+Number of heads: 8
+Overall average attention sum: A=0.657669, B=0.342331
+Overall ratio A/B: 1.921147
+
+File: cross_attn_downblock_2_layer_1_spatial_0_attn1
+Feature size: 16x16
+Number of heads: 8
+Overall average attention sum: A=0.824419, B=0.175581
+Overall ratio A/B: 4.695389
+
+File: cross_attn_downblock_2_layer_0_spatial_0_attn1
+Feature size: 16x16
+Number of heads: 8
+Overall average attention sum: A=0.615392, B=0.384608
+Overall ratio A/B: 1.600047
+
+File: cross_attn_downblock_1_layer_1_spatial_0_attn1
+Feature size: 32x32
+Number of heads: 8
+Overall average attention sum: A=0.837756, B=0.162244
+Overall ratio A/B: 5.163538
+
+File: cross_attn_downblock_1_layer_0_spatial_0_attn1
+Feature size: 32x32
+Number of heads: 8
+Overall average attention sum: A=0.791950, B=0.208050
+Overall ratio A/B: 3.806538
+
+File: cross_attn_downblock_0_layer_1_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+Overall average attention sum: A=0.921718, B=0.078282
+Overall ratio A/B: 11.774312
+
+File: cross_attn_downblock_0_layer_0_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+Overall average attention sum: A=0.376133, B=0.623867
+Overall ratio A/B: 0.602905
+

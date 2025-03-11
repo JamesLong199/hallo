@@ -176,6 +176,7 @@ class VanillaTemporalModule(nn.Module):
         input_tensor,
         encoder_hidden_states,
         attention_mask=None,
+        block_name='unknown_temporal_transformer_block',
     ):
         """
         Forward pass of the TemporalTransformer3DModel.
@@ -190,7 +191,8 @@ class VanillaTemporalModule(nn.Module):
         """
         hidden_states = input_tensor
         hidden_states = self.temporal_transformer(
-            hidden_states, encoder_hidden_states
+            hidden_states, encoder_hidden_states,
+            block_name=block_name,
         )
 
         output = hidden_states
@@ -267,7 +269,7 @@ class TemporalTransformer3DModel(nn.Module):
         )
         self.proj_out = nn.Linear(inner_dim, in_channels)
 
-    def forward(self, hidden_states, encoder_hidden_states=None):
+    def forward(self, hidden_states, encoder_hidden_states=None, block_name='unknown_temporal_transformer_block'):
         """
         Forward pass for the TemporalTransformer3DModel.
 
@@ -282,8 +284,9 @@ class TemporalTransformer3DModel(nn.Module):
             hidden_states.dim() == 5
         ), f"Expected hidden_states to have ndim=5, but got ndim={hidden_states.dim()}."
         video_length = hidden_states.shape[2]
+        # print(f"motion_module 285 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 2, 320, 18, 64, 64
         hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
-
+        # print(f"motion_module 287 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 320, 64, 64
         batch, _, height, weight = hidden_states.shape
         residual = hidden_states
 
@@ -292,26 +295,32 @@ class TemporalTransformer3DModel(nn.Module):
         hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(
             batch, height * weight, inner_dim
         )
+        # print(f"motion_module 296 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
         hidden_states = self.proj_in(hidden_states)
+        # print(f"motion_module 298 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
 
         # Transformer Blocks
-        for block in self.transformer_blocks:
+        print('number of transformer blocks:', len(self.transformer_blocks))
+        for i, block in enumerate(self.transformer_blocks):
             hidden_states = block(
                 hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 video_length=video_length,
+                block_name=block_name+f'_temporal_{i}_attn',
             )
-
+        # print(f"motion_module 307 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
         # output
         hidden_states = self.proj_out(hidden_states)
+        # print(f"motion_module 310 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
         hidden_states = (
             hidden_states.reshape(batch, height, weight, inner_dim)
             .permute(0, 3, 1, 2)
             .contiguous()
         )
-
+        # print(f"motion_module 313 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 320, 64, 64
         output = hidden_states + residual
         output = rearrange(output, "(b f) c h w -> b c f h w", f=video_length)
+        # print(f"motion_module 319 forward output.shape: {output.shape}", flush=True) # 2, 320, 18, 64, 64
 
         return output
 
@@ -389,6 +398,7 @@ class TemporalTransformerBlock(nn.Module):
         hidden_states,
         encoder_hidden_states=None,
         video_length=None,
+        block_name='unknown_temporal_attn_block',
     ):
         """
         Forward pass for the TemporalTransformerBlock.
@@ -404,7 +414,7 @@ class TemporalTransformerBlock(nn.Module):
             torch.Tensor: The output hidden states with shape
                 (batch_size, video_length, in_channels).
         """
-        for attention_block, norm in zip(self.attention_blocks, self.norms):
+        for i, (attention_block, norm) in enumerate(zip(self.attention_blocks, self.norms)):
             norm_hidden_states = norm(hidden_states)
             hidden_states = (
                 attention_block(
@@ -413,6 +423,7 @@ class TemporalTransformerBlock(nn.Module):
                     if attention_block.is_cross_attention
                     else None,
                     video_length=video_length,
+                    block_name=block_name,
                 )
                 + hidden_states
             )
@@ -556,6 +567,7 @@ class VersatileAttention(Attention):
         encoder_hidden_states=None,
         attention_mask=None,
         video_length=None,
+        block_name='unknown_temporal_attn_block',
         **cross_attention_kwargs,
     ):
         """
@@ -578,13 +590,14 @@ class VersatileAttention(Attention):
         """
         if self.attention_mode == "Temporal":
             d = hidden_states.shape[1]  # d means HxW
+            # print(f"versatile_attention 587 hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
             hidden_states = rearrange(
                 hidden_states, "(b f) d c -> (b d) f c", f=video_length
             )
-
+            # print(f"versatile_attention 593 hidden_states.shape: {hidden_states.shape}", flush=True) # 8192, 18, 320
             if self.pos_encoder is not None:
                 hidden_states = self.pos_encoder(hidden_states)
-
+            # print(f"versatile_attention 598 encoder_hidden_states: {encoder_hidden_states}", flush=True) # None
             encoder_hidden_states = (
                 repeat(encoder_hidden_states, "b n c -> (b d) n c", d=d)
                 if encoder_hidden_states is not None
@@ -599,11 +612,13 @@ class VersatileAttention(Attention):
             hidden_states,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
+            attention_name=block_name,
             **cross_attention_kwargs,
         )
-
+        # print(f"versatile_attention 613 hidden_states.shape: {hidden_states.shape}", flush=True) # 8192, 18, 320
         if self.attention_mode == "Temporal":
             hidden_states = rearrange(
                 hidden_states, "(b d) f c -> (b f) d c", d=d)
+        # print(f"versatile_attention 620 hidden_states.shape: {hidden_states.shape}", flush=True) # 36, 4096, 320
 
         return hidden_states

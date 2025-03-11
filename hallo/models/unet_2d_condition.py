@@ -975,6 +975,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 If `return_dict` is True, an [`~models.unet_2d_condition.UNet2DConditionOutput`] is returned, otherwise
                 a `tuple` is returned where the first element is the sample tensor.
         """
+        # print('unet_2d_condition line 978 sample.shape:', sample.shape) # 6, 4, 64, 64
+        # print('unet_2d_condition line 979 timestep:', timestep) # 0
+        # print('unet_2d_condition line 980 encoder_hidden_states.shape:', encoder_hidden_states.shape) # 2, 4, 768
         # By default samples have to be AT least a multiple of the overall upsampling factor.
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layers).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size

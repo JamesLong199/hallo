@@ -1,0 +1,16 @@
+Attention Statistics for t00_cross_attn_upblock_3_layer_2_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+
+Average attention sum per head:
+  Head 0: A=0.935630, B=0.064370, Ratio A/B=14.535195
+  Head 1: A=0.976877, B=0.023123, Ratio A/B=42.246204
+  Head 2: A=0.946236, B=0.053764, Ratio A/B=17.599800
+  Head 3: A=0.898030, B=0.101970, Ratio A/B=8.806815
+  Head 4: A=0.817640, B=0.182360, Ratio A/B=4.483663
+  Head 5: A=0.922266, B=0.077734, Ratio A/B=11.864399
+  Head 6: A=0.999495, B=0.000506, Ratio A/B=1975.406582
+  Head 7: A=0.998339, B=0.001661, Ratio A/B=601.150719
+
+Overall average attention sum: A=0.936814, B=0.063186
+Overall ratio A/B: 14.826300

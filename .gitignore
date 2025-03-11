@@ -5,6 +5,9 @@ mlruns/
 test_data/
 pretrained_models/
 
+# attention results
+attention_data/
+
 # Poetry project
 poetry.lock
 

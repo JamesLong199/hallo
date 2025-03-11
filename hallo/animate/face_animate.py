@@ -40,6 +40,7 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 
 from hallo.models.mutual_self_attention import ReferenceAttentionControl
+import time
 
 
 @dataclass
@@ -54,6 +55,9 @@ class FaceAnimatePipelineOutput(BaseOutput):
         __init__(self, videos: Union[torch.Tensor, np.ndarray]): Initializes the FaceAnimatePipelineOutput object with the generated video frames.
     """
     videos: Union[torch.Tensor, np.ndarray]
+    # added
+    # time_elapsed: Optional[float] = None
+    # gflops: Optional[float] = None
 
 class FaceAnimatePipeline(DiffusionPipeline):
     """
@@ -289,13 +293,17 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         # prepare clip image embeddings
         clip_image_embeds = face_emb
-        clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype)
+        clip_image_embeds = clip_image_embeds.to(self.image_proj.device, self.image_proj.dtype) # 1, 512
+        # print('face_animate line 297 clip_image_embeds.shape:', clip_image_embeds.shape, flush=True)
 
-        encoder_hidden_states = self.image_proj(clip_image_embeds)
-        uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds))
+        encoder_hidden_states = self.image_proj(clip_image_embeds) # 1, 4, 768
+        uncond_encoder_hidden_states = self.image_proj(torch.zeros_like(clip_image_embeds)) # 1, 4, 768
+        # print('face_animate line 302 encoder_hidden_states.shape:', encoder_hidden_states.shape, flush=True)
+        # print('face_animate line 303 uncond_encoder_hidden_states.shape:', uncond_encoder_hidden_states.shape, flush=True)
 
         if do_classifier_free_guidance:
-            encoder_hidden_states = torch.cat([uncond_encoder_hidden_states, encoder_hidden_states], dim=0)
+            encoder_hidden_states = torch.cat([uncond_encoder_hidden_states, encoder_hidden_states], dim=0) # 2, 4, 768
+            # print('face_animate line 307 encoder_hidden_states.shape (after concat):', encoder_hidden_states.shape, flush=True)
 
         reference_control_writer = ReferenceAttentionControl(
             self.reference_unet,
@@ -329,18 +337,26 @@ class FaceAnimatePipeline(DiffusionPipeline):
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
         # Prepare ref image latents
-        ref_image_tensor = rearrange(ref_image, "b f c h w -> (b f) c h w")
-        ref_image_tensor = self.ref_image_processor.preprocess(ref_image_tensor, height=height, width=width)  # (bs, c, width, height)
+        ref_image_tensor = rearrange(ref_image, "b f c h w -> (b f) c h w") # 3, 3, 512, 512
+        # print('face_animate line 337 ref_image_tensor.shape:', ref_image_tensor.shape, flush=True)
+        ref_image_tensor = self.ref_image_processor.preprocess(ref_image_tensor, height=height, width=width)  # (bs, c, width, height) 3, 3, 512, 512
+        # print('face_animate line 339 ref_image_tensor.shape (after preprocess):', ref_image_tensor.shape, flush=True)
         ref_image_tensor = ref_image_tensor.to(dtype=self.vae.dtype, device=self.vae.device)
-        ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean
-        ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w)
+        ref_image_latents = self.vae.encode(ref_image_tensor).latent_dist.mean 
+        ref_image_latents = ref_image_latents * 0.18215  # (b, 4, h, w) 3, 4, 64, 64
+        # print('face_animate line 343 ref_image_latents.shape:', ref_image_latents.shape, flush=True)
 
 
         face_mask = face_mask.unsqueeze(1).to(dtype=self.face_locator.dtype, device=self.face_locator.device) # (bs, f, c, H, W)
+        # print('face_animate line 348 face_mask.shape:', face_mask.shape, flush=True)
         face_mask = repeat(face_mask, "b f c h w -> b (repeat f) c h w", repeat=video_length)
+        # print('face_animate line 350 face_mask.shape:', face_mask.shape, flush=True)    
         face_mask = face_mask.transpose(1, 2)  # (bs, c, f, H, W)
+        # print('face_animate line 352 face_mask.shape:', face_mask.shape, flush=True)
         face_mask = self.face_locator(face_mask)
-        face_mask = torch.cat([torch.zeros_like(face_mask), face_mask], dim=0) if do_classifier_free_guidance else face_mask
+        # print('face_animate line 354 face_mask.shape:', face_mask.shape, flush=True)
+        face_mask = torch.cat([torch.zeros_like(face_mask), face_mask], dim=0) if do_classifier_free_guidance else face_mask # 2, 320, 16, 64, 64
+        # print('face_animate line 356 face_mask.shape:', face_mask.shape, flush=True)
 
         pixel_values_full_mask = (
             [torch.cat([mask] * 2) for mask in pixel_values_full_mask]
@@ -374,9 +390,14 @@ class FaceAnimatePipeline(DiffusionPipeline):
         pixel_values_full_mask = pixel_values_full_mask_
 
 
-        uncond_audio_tensor = torch.zeros_like(audio_tensor)
-        audio_tensor = torch.cat([uncond_audio_tensor, audio_tensor], dim=0)
+        uncond_audio_tensor = torch.zeros_like(audio_tensor) # 1, 16, 32, 768
+        # print('face_animate line 358 uncond_audio_tensor.shape:', uncond_audio_tensor.shape, flush=True)    
+        audio_tensor = torch.cat([uncond_audio_tensor, audio_tensor], dim=0) # 2, 16, 32, 768
+        # print('face_animate line 360 audio_tensor.shape:', audio_tensor.shape, flush=True)
         audio_tensor = audio_tensor.to(dtype=self.denoising_unet.dtype, device=self.denoising_unet.device)
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
 
         # denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -384,6 +405,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
             for i, t in enumerate(timesteps):
                 # Forward reference image
                 if i == 0:
+                    start_event.record()
                     self.reference_unet(
                         ref_image_latents.repeat(
                             (2 if do_classifier_free_guidance else 1), 1, 1, 1
@@ -392,12 +414,17 @@ class FaceAnimatePipeline(DiffusionPipeline):
                         encoder_hidden_states=encoder_hidden_states,
                         return_dict=False,
                     )
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"Reference UNet step took {time_elapsed} seconds", flush=True)
                     reference_control_reader.update(reference_control_writer)
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                start_event.record()
                 noise_pred = self.denoising_unet(
                     latent_model_input,
                     t,
@@ -410,6 +437,11 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     motion_scale=motion_scale,
                     return_dict=False,
                 )[0]
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000
+                print(f"Denoising UNet step {i} took {time_elapsed} seconds", flush=True)
+                # assert 0
 
                 # perform guidance
                 if do_classifier_free_guidance:
@@ -431,12 +463,15 @@ class FaceAnimatePipeline(DiffusionPipeline):
 
         # Post-processing
         images = self.decode_latents(latents)  # (b, c, f, h, w)
-
+        # print('face_animate line 450 images.shape:', images.shape, flush=True)
+        # assert 0
         # Convert to tensor
         if output_type == "tensor":
             images = torch.from_numpy(images)
 
         if not return_dict:
             return images
+        
+        
 
         return FaceAnimatePipelineOutput(videos=images)

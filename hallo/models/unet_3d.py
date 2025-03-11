@@ -41,7 +41,7 @@ from .unet_3d_blocks import (UNetMidBlock3DCrossAttn, get_down_block,
                              get_up_block)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
+import time
 
 @dataclass
 class UNet3DConditionOutput(BaseOutput):
@@ -211,6 +211,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         if isinstance(attention_head_dim, int):
             attention_head_dim = (attention_head_dim,) * len(down_block_types)
 
+        print(f"unet_3d 213 attention_head_dim: {attention_head_dim}", flush=True)
         # down
         output_channel = block_out_channels[0]
         for i, down_block_type in enumerate(down_block_types):
@@ -251,6 +252,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 stack_enable_blocks_name=stack_enable_blocks_name,
                 stack_enable_blocks_depth=stack_enable_blocks_depth,
             )
+            # if down_block_type == 'CrossAttnDownBlock3D':
+            #     print(f'unet_3d 254 down_block {i} attentions:', down_block.attentions)
             self.down_blocks.append(down_block)
 
         # mid
@@ -542,6 +545,9 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layears).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size
         # on the fly if necessary.
+        print(f"unet_3d 548 timestep: {timestep}", flush=True) 
+        timestep_converted = (999-timestep) / 25
+        
         default_overall_up_factor = 2**self.num_upsamplers
 
         # upsample size should be forwarded when sample is not a multiple of `default_overall_up_factor`
@@ -604,13 +610,18 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         if mask_cond_fea is not None:
             sample = sample + mask_cond_fea
 
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
         # down
         down_block_res_samples = (sample,)
-        for downsample_block in self.down_blocks:
+        # for downsample_block in self.down_blocks:
+        for i, downsample_block in enumerate(self.down_blocks):
             if (
                 hasattr(downsample_block, "has_cross_attention")
                 and downsample_block.has_cross_attention
             ):
+                start_event.record()
                 sample, res_samples = downsample_block(
                     hidden_states=sample,
                     temb=emb,
@@ -621,15 +632,25 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     lip_mask=lip_mask,
                     audio_embedding=audio_embedding,
                     motion_scale=motion_scale,
+                    block_name=f't{int(timestep_converted):02d}_cross_attn_downblock_{i}',
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000
+                print(f"Downsample block {i} execution time: {time_elapsed} seconds")
                 # print("")
             else:
+                start_event.record()
                 sample, res_samples = downsample_block(
                     hidden_states=sample,
                     temb=emb,
                     encoder_hidden_states=encoder_hidden_states,
                     # audio_embedding=audio_embedding,
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000
+                print(f"Downsample block {i} execution time: {time_elapsed} seconds")
                 # print("")
 
             down_block_res_samples += res_samples
@@ -648,6 +669,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             down_block_res_samples = new_down_block_res_samples
 
         # mid
+        start_event.record()
         sample = self.mid_block(
             sample,
             emb,
@@ -658,13 +680,19 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             lip_mask=lip_mask,
             audio_embedding=audio_embedding,
             motion_scale=motion_scale,
+            block_name=f't{int(timestep_converted):02d}_mid_block',
         )
+        end_event.record()
+        end_event.synchronize()
+        time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+        print(f"Mid block execution time: {time_elapsed} seconds")
 
         if mid_block_additional_residual is not None:
             sample = sample + mid_block_additional_residual
 
         # up
         for i, upsample_block in enumerate(self.up_blocks):
+            
             is_final_block = i == len(self.up_blocks) - 1
 
             res_samples = down_block_res_samples[-len(upsample_block.resnets):]
@@ -681,6 +709,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 hasattr(upsample_block, "has_cross_attention")
                 and upsample_block.has_cross_attention
             ):
+                start_event.record()
                 sample = upsample_block(
                     hidden_states=sample,
                     temb=emb,
@@ -693,8 +722,14 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     lip_mask=lip_mask,
                     audio_embedding=audio_embedding,
                     motion_scale=motion_scale,
+                    block_name=f't{int(timestep_converted):02d}_cross_attn_upblock_{i}',
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"Upsample block {i} execution time: {time_elapsed} seconds")
             else:
+                start_event.record()
                 sample = upsample_block(
                     hidden_states=sample,
                     temb=emb,
@@ -703,6 +738,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     encoder_hidden_states=encoder_hidden_states,
                     # audio_embedding=audio_embedding,
                 )
+                end_event.record()
+                end_event.synchronize()
+                time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                print(f"Upsample block {i} execution time: {time_elapsed} seconds")
 
         # post-process
         sample = self.conv_norm_out(sample)

@@ -1,0 +1,16 @@
+Attention Statistics for t09_cross_attn_downblock_0_layer_1_spatial_0_attn1
+Feature size: 64x64
+Number of heads: 8
+
+Average attention sum per head:
+  Head 0: A=0.964180, B=0.035821, Ratio A/B=26.916905
+  Head 1: A=0.915082, B=0.084918, Ratio A/B=10.776111
+  Head 2: A=0.890265, B=0.109735, Ratio A/B=8.112834
+  Head 3: A=0.821709, B=0.178291, Ratio A/B=4.608799
+  Head 4: A=0.940042, B=0.059958, Ratio A/B=15.678243
+  Head 5: A=0.933780, B=0.066221, Ratio A/B=14.101058
+  Head 6: A=0.901222, B=0.098778, Ratio A/B=9.123714
+  Head 7: A=0.927535, B=0.072465, Ratio A/B=12.799743
+
+Overall average attention sum: A=0.911727, B=0.088273
+Overall ratio A/B: 10.328446

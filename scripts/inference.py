@@ -36,6 +36,13 @@ from diffusers import AutoencoderKL, DDIMScheduler
 from omegaconf import OmegaConf
 from torch import nn
 
+import sys
+# Step 1: Get the parent directory path
+parent_directory = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+# Step 2: Append the parent directory to sys.path
+sys.path.append(parent_directory)
+
 from hallo.animate.face_animate import FaceAnimatePipeline
 from hallo.datasets.audio_processor import AudioProcessor
 from hallo.datasets.image_processor import ImageProcessor
@@ -335,8 +342,13 @@ def inference_process(args: argparse.Namespace):
             generator=generator,
             motion_scale=motion_scale,
         )
-
+        
         tensor_result.append(pipeline_output.videos)
+        # Save the current pipeline output videos
+        save_dir = "intermediate"
+        os.makedirs(save_dir, exist_ok=True)
+        tensor_to_video(pipeline_output.videos.squeeze(0), os.path.join(save_dir, f"output_{t}.mp4"), driving_audio_path)
+        assert 0
 
     tensor_result = torch.cat(tensor_result, dim=2)
     tensor_result = tensor_result.squeeze(0)

@@ -76,6 +76,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         # Define input layers
         self.in_channels = in_channels
 
+        # print(f"transformer_3d 79 num_attention_heads: {num_attention_heads}", flush=True) # 8
+        # print(f"transformer_3d 80 attention_head_dim: {attention_head_dim}", flush=True) # 40 / 80 / 160
+        # print(f"transformer_3d 81 in_channels: {in_channels}", flush=True) # 320 / 640 / 1280
+        # print(f"transformer_3d 82 inner_dim: {inner_dim}", flush=True) # 320 / 640 / 1280
+
         self.norm = torch.nn.GroupNorm(
             num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True
         )
@@ -155,6 +160,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         motion_scale=None,
         timestep=None,
         return_dict: bool = True,
+        block_name='unknown_transformer_block',
     ):
         """
         Forward pass for the Transformer3DModel.
@@ -178,7 +184,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         ), f"Expected hidden_states to have ndim=5, but got ndim={hidden_states.dim()}."
         video_length = hidden_states.shape[2]
         hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
-
+        # print('transformer_3d 181 hidden_states.shape:', hidden_states.shape)
         # TODO
         if self.use_audio_module:
             encoder_hidden_states = rearrange(
@@ -187,9 +193,11 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             )
         else:
             if encoder_hidden_states.shape[0] != hidden_states.shape[0]:
+                # print('transformer_3d 190 encoder_hidden_states.shape:', encoder_hidden_states.shape)
                 encoder_hidden_states = repeat(
                     encoder_hidden_states, "b n c -> (b f) n c", f=video_length
                 )
+                # print('transformer_3d 194 encoder_hidden_states.shape:', encoder_hidden_states.shape)
 
         batch, _, height, weight = hidden_states.shape
         residual = hidden_states
@@ -210,16 +218,22 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         # Blocks
         motion_frames = []
-        for _, block in enumerate(self.transformer_blocks):
+        for i, block in enumerate(self.transformer_blocks):
             if isinstance(block, TemporalBasicTransformerBlock):
+                # print('transformer_3d 217 block is TemporalBasicTransformerBlock')
+                # print(f"Block instance id: {id(block)}")
+                # print(f"Block's forward method: {block.forward}")
+                # print(f"Block's class MRO: {block.__class__.__mro__}")
                 hidden_states, motion_frame_fea = block(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     timestep=timestep,
                     video_length=video_length,
+                    block_name=f'{block_name}_spatial_{i}',
                 )
                 motion_frames.append(motion_frame_fea)
             else:
+                # print('transformer_3d 224 block is not TemporalBasicTransformerBlock')
                 hidden_states = block(
                     hidden_states,  # shape [2, 4096, 320]
                     encoder_hidden_states=encoder_hidden_states,  # shape [2, 20, 640]
@@ -230,6 +244,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     video_length=video_length,
                     motion_scale=motion_scale,
+                    block_name=f'{block_name}_audio_{i}',
                 )
 
         # Output

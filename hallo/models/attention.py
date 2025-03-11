@@ -22,9 +22,11 @@ import torch
 from diffusers.models.attention import (AdaLayerNorm, AdaLayerNormZero,
                                         Attention, FeedForward)
 from diffusers.models.embeddings import SinusoidalPositionalEmbedding
+from diffusers.models.attention_processor import AttnProcessor
 from einops import rearrange
 from torch import nn
 
+from .custom_attn_processor import AttentionScoreSavingProcessor, AttentionVisualizationProcessor
 
 class GatedSelfAttentionDense(nn.Module):
     """
@@ -469,7 +471,9 @@ class TemporalBasicTransformerBlock(nn.Module):
         Returns:
             torch.FloatTensor: The output hidden states after passing through the TemporalBasicTransformerBlock.
         """
+        # print(f"Creating TemporalBasicTransformerBlock instance: {id(self)}", flush=True)
         super().__init__()
+        # assert 0
         self.only_cross_attention = only_cross_attention
         self.use_ada_layer_norm = num_embeds_ada_norm is not None
         self.unet_use_cross_frame_attention = unet_use_cross_frame_attention
@@ -484,6 +488,11 @@ class TemporalBasicTransformerBlock(nn.Module):
             bias=attention_bias,
             upcast_attention=upcast_attention,
         )
+        # self.attn_processor = AttentionVisualizationProcessor(save_dir='/workspace/codes/hallo/attn_maps')
+        # self.attn1.set_processor(self.attn_processor)
+        # self.attn_processor.block_name = 'attn1'
+        # self.attn_processor.visualize_attention = True
+
         self.norm1 = (
             AdaLayerNorm(dim, num_embeds_ada_norm)
             if self.use_ada_layer_norm
@@ -560,6 +569,9 @@ class TemporalBasicTransformerBlock(nn.Module):
         Returns:
             torch.FloatTensor: The output tensor after passing through the transformer block with shape (batch_size, seq_len, dim).
         """
+        print(f"Forward called on TemporalBasicTransformerBlock instance: {id(self)}", flush=True)
+        print(f"Forward method defined in: {__file__}", flush=True)
+        assert 0  # This should trigger if the method is called
         norm_hidden_states = (
             self.norm1(hidden_states, timestep)
             if self.use_ada_layer_norm
@@ -567,6 +579,8 @@ class TemporalBasicTransformerBlock(nn.Module):
         )
 
         if self.unet_use_cross_frame_attention:
+            print('attention 570 unet_use_cross_frame_attention', flush=True)
+            start_time = time.time()
             hidden_states = (
                 self.attn1(
                     norm_hidden_states,
@@ -575,11 +589,17 @@ class TemporalBasicTransformerBlock(nn.Module):
                 )
                 + hidden_states
             )
+            end_time = time.time()
+            print(f'attention 581 attn1 time: {end_time - start_time}', flush=True)
         else:
+            print('attention 583 not unet_use_cross_frame_attention', flush=True)
+            start_time = time.time()
             hidden_states = (
                 self.attn1(norm_hidden_states, attention_mask=attention_mask)
                 + hidden_states
             )
+            end_time = time.time()
+            print(f'attention 590 attn1 time: {end_time - start_time}', flush=True)
 
         if self.attn2 is not None:
             # Cross-Attention
@@ -588,6 +608,7 @@ class TemporalBasicTransformerBlock(nn.Module):
                 if self.use_ada_layer_norm
                 else self.norm2(hidden_states)
             )
+            start_time = time.time()
             hidden_states = (
                 self.attn2(
                     norm_hidden_states,
@@ -596,9 +617,14 @@ class TemporalBasicTransformerBlock(nn.Module):
                 )
                 + hidden_states
             )
+            end_time = time.time()
+            print(f'attention 600 attn2 time: {end_time - start_time}', flush=True)
 
         # Feed-forward
+        start_time = time.time()
         hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
+        end_time = time.time()
+        print(f'attention 615 ff time: {end_time - start_time}', flush=True)
 
         # Temporal-Attention
         if self.unet_use_temporal_attention:
@@ -611,7 +637,10 @@ class TemporalBasicTransformerBlock(nn.Module):
                 if self.use_ada_layer_norm
                 else self.norm_temp(hidden_states)
             )
+            start_time = time.time()
             hidden_states = self.attn_temp(norm_hidden_states) + hidden_states
+            end_time = time.time()
+            print(f'attention 631 attn_temp time: {end_time - start_time}', flush=True)
             hidden_states = rearrange(
                 hidden_states, "(b d) f c -> (b f) d c", d=d)
 
@@ -792,6 +821,7 @@ class AudioTemporalBasicTransformerBlock(nn.Module):
         lip_mask=None,
         motion_scale=None,
         video_length=None,
+        block_name='unknown_audio_attn_block',
     ):
         """
         Forward pass for the AudioTemporalBasicTransformerBlock.
@@ -809,28 +839,36 @@ class AudioTemporalBasicTransformerBlock(nn.Module):
         Returns:
             torch.FloatTensor: The output tensor after passing through the AudioTemporalBasicTransformerBlock.
         """
+        # print(f"attention 834 forward hidden_states.shape: {hidden_states.shape}", flush=True) # 32, 4096, 320
         norm_hidden_states = (
             self.norm1(hidden_states, timestep)
             if self.use_ada_layer_norm
             else self.norm1(hidden_states)
         )
-
+        # print(f"attention 840 norm_hidden_states.shape: {norm_hidden_states.shape}", flush=True) # 32, 4096, 320
         if self.unet_use_cross_frame_attention:
+            # print('attention 841 unet_use_cross_frame_attention', flush=True) 
             hidden_states = (
                 self.attn1(
                     norm_hidden_states,
                     attention_mask=attention_mask,
                     video_length=video_length,
+                    block_name=block_name+'_attn1',
                 )
                 + hidden_states
             )
-        else:
+        else: # 
+            # print('attention 851 not unet_use_cross_frame_attention', flush=True)
             hidden_states = (
-                self.attn1(norm_hidden_states, attention_mask=attention_mask)
+                self.attn1(norm_hidden_states, attention_mask=attention_mask,
+                    attention_name=block_name+'_attn1',
+                )
                 + hidden_states
             )
+            # print(f"attention 857 hidden_states.shape: {hidden_states.shape}", flush=True) # 32, 4096, 320
 
         if self.attn2 is not None:
+            # print('attention 860 attn2 is not None', flush=True)
             # Cross-Attention
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep)
@@ -841,68 +879,88 @@ class AudioTemporalBasicTransformerBlock(nn.Module):
                 norm_hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
+                attention_name=block_name+'_attn2',
             ) + hidden_states
 
-        elif self.attn2_0 is not None:
+        elif self.attn2_0 is not None: #
+            # print('attention 874 attn2_0 is not None', flush=True)
             norm_hidden_states = (
                 self.norm2(hidden_states, timestep)
                 if self.use_ada_layer_norm
                 else self.norm2(hidden_states)
             )
-
+            # print(f"attention 880 norm_hidden_states.shape: {norm_hidden_states.shape}", flush=True) # 32, 4096, 320
+            # print(f"attention 881 encoder_hidden_states.shape: {encoder_hidden_states.shape}", flush=True) # 32, 32, 768
             level = self.depth
+            # print(f"attention 882 level: {level}", flush=True) # 0
             full_hidden_states = (
                 self.attn2_0(
                     norm_hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    attention_name=block_name+'_attn2_0',
                 ) * full_mask[level][:, :, None]
             )
+            # print(f"attention 888 full_hidden_states.shape: {full_hidden_states.shape}", flush=True) # 32, 4096, 320
             bz, sz, c = full_hidden_states.shape
             sz_sqrt = int(sz ** 0.5)
             full_hidden_states = full_hidden_states.reshape(
                 bz, sz_sqrt, sz_sqrt, c).permute(0, 3, 1, 2)
+            # print(f"attention 896 full_hidden_states.shape: {full_hidden_states.shape}", flush=True) # 32, 320, 64, 64
             full_hidden_states = self.zero_conv_full(full_hidden_states).permute(0, 2, 3, 1).reshape(bz, -1, c)
+            # print(f"attention 898 full_hidden_states.shape: {full_hidden_states.shape}", flush=True) # 32, 4096, 320
 
             face_hidden_state = (
                 self.attn2_1(
                     norm_hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    attention_name=block_name+'_attn2_1',
                 ) * face_mask[level][:, :, None]
             )
+            # print(f"attention 907 face_hidden_state.shape: {face_hidden_state.shape}", flush=True) # 32, 4096, 320
             face_hidden_state = face_hidden_state.reshape(
                 bz, sz_sqrt, sz_sqrt, c).permute(0, 3, 1, 2)
+            # print(f"attention 910 face_hidden_state.shape: {face_hidden_state.shape}", flush=True) # 32, 320, 64, 64
             face_hidden_state = self.zero_conv_face(
                 face_hidden_state).permute(0, 2, 3, 1).reshape(bz, -1, c)
+            # print(f"attention 913 face_hidden_state.shape: {face_hidden_state.shape}", flush=True) # 32, 4096, 320
 
             lip_hidden_state = (
                 self.attn2_2(
                     norm_hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    attention_name=block_name+'_attn2_2',
                 ) * lip_mask[level][:, :, None]
 
             ) # [32, 4096, 320]
+            # print(f"attention 923 lip_hidden_state.shape: {lip_hidden_state.shape}", flush=True) # 32, 4096, 320
             lip_hidden_state = lip_hidden_state.reshape(
                 bz, sz_sqrt, sz_sqrt, c).permute(0, 3, 1, 2)
+            # print(f"attention 926 lip_hidden_state.shape: {lip_hidden_state.shape}", flush=True) # 32, 320, 64, 64
             lip_hidden_state = self.zero_conv_lip(
                 lip_hidden_state).permute(0, 2, 3, 1).reshape(bz, -1, c)
+            # print(f"attention 930 lip_hidden_state.shape: {lip_hidden_state.shape}", flush=True) # 32, 4096, 320
 
-            if motion_scale is not None:
+            if motion_scale is not None: #
+                # print('attention 932 motion_scale is not None', flush=True)
                 hidden_states = (
                     motion_scale[0] * full_hidden_states +
                     motion_scale[1] * face_hidden_state +
                     motion_scale[2] * lip_hidden_state + hidden_states
                 )
             else:
+                # print('attention 878 motion_scale is None', flush=True)
                 hidden_states = (
                     full_hidden_states +
                     face_hidden_state +
                     lip_hidden_state + hidden_states
                 )
         # Feed-forward
+        # print(f"attention 947 hidden_states.shape: {hidden_states.shape}", flush=True) # 32, 4096, 320
         hidden_states = self.ff(self.norm3(hidden_states)) + hidden_states
+        # print(f"attention 950 hidden_states.shape: {hidden_states.shape}", flush=True) # 32, 4096, 320
 
         return hidden_states
 
