@@ -173,10 +173,34 @@ def inference_process(args: argparse.Namespace):
             source_image_path, save_path, config.face_expand_ratio)
 
     fg_mask = np.load('examples/mask_fg/1.npy').astype(np.uint8)
-    fg_mask_64 = cv2.resize(fg_mask, (64, 64))
-    # fg_mask_32 = cv2.resize(fg_mask, (32, 32))
-    # source_fg_mask = {64: fg_mask_64, 32: fg_mask_32}
-    source_fg_mask = {64: fg_mask_64}
+    fg_mask_64 = cv2.resize(fg_mask, (64, 64)).flatten()
+    bool_fg_mask_64 = torch.from_numpy(fg_mask_64).bool()
+    bool_bg_mask_64 = ~bool_fg_mask_64
+    bool_fg_mask_64_encoder = torch.cat([bool_fg_mask_64, bool_fg_mask_64], dim=0)
+    bool_bg_mask_64_encoder = torch.cat([bool_bg_mask_64, bool_bg_mask_64], dim=0)
+
+    fg_mask_32 = cv2.resize(fg_mask, (32, 32)).flatten()
+    bool_fg_mask_32 = torch.from_numpy(fg_mask_32).bool()
+    bool_bg_mask_32 = ~bool_fg_mask_32
+    bool_fg_mask_32_encoder = torch.cat([bool_fg_mask_32, bool_fg_mask_32], dim=0)
+    bool_bg_mask_32_encoder = torch.cat([bool_bg_mask_32, bool_bg_mask_32], dim=0)
+
+    source_fg_mask = {
+        64: {
+            "fg": bool_fg_mask_64,
+            "bg": bool_bg_mask_64,
+            "fg_encoder": bool_fg_mask_64_encoder,
+            "bg_encoder": bool_bg_mask_64_encoder,
+        },
+        32: {
+            "fg": bool_fg_mask_32,
+            "bg": bool_bg_mask_32,
+            "fg_encoder": bool_fg_mask_32_encoder,
+            "bg_encoder": bool_bg_mask_32_encoder,
+        }
+    }
+
+
 
     # 3.2 prepare audio embeddings
     sample_rate = config.data.driving_audio.sample_rate
@@ -354,11 +378,11 @@ def inference_process(args: argparse.Namespace):
         
         tensor_result.append(pipeline_output.videos)
 
-        # # Save the current pipeline output videos
-        # save_dir = "intermediate"
-        # os.makedirs(save_dir, exist_ok=True)
-        # tensor_to_video(pipeline_output.videos.squeeze(0), os.path.join(save_dir, f"output_{t}.mp4"), driving_audio_path)
-        # assert 0
+        # Save the current pipeline output videos
+        save_dir = "intermediate"
+        os.makedirs(save_dir, exist_ok=True)
+        tensor_to_video(pipeline_output.videos.squeeze(0), os.path.join(save_dir, f"output_{t}.mp4"), driving_audio_path)
+        assert 0
 
     tensor_result = torch.cat(tensor_result, dim=2)
     tensor_result = tensor_result.squeeze(0)

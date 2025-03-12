@@ -290,6 +290,7 @@ class ReferenceAttentionControl:
                     #     print(f"mutual_self_attention attn1 mask_fg is not None:", flush=True)
                     #     print(f"mutual_self_attention attn1 mask_fg.keys(): {mask_fg.keys()}", flush=True)
                     #     print(f"mutual_self_attention attn1 math.sqrt(norm_hidden_states.shape[1]): {math.sqrt(norm_hidden_states.shape[1])}", flush=True)
+                    # if mask_fg is None or math.sqrt(norm_hidden_states.shape[1]) not in mask_fg or 'downblock_0_layer_1' not in block_name:
                     if mask_fg is None or math.sqrt(norm_hidden_states.shape[1]) not in mask_fg:
                         hidden_states_uc = (
                             self.attn1(
@@ -311,13 +312,29 @@ class ReferenceAttentionControl:
                         print(f"mutual_self_attention attn1 mask_fg.keys(): {mask_fg.keys()}", flush=True)
                     # if face_masks is not None and math.sqrt(norm_hidden_states.shape[1]) in face_masks.keys():
                         print(f"mutual_self_attention attn1 fg mask size: {math.sqrt(norm_hidden_states.shape[1])}", flush=True)
-                        fg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])].flatten() # 64x64 or 32x32
-                        bool_fg_mask = torch.from_numpy(fg_mask).bool()
+                        # fg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])].flatten() # 64x64 or 32x32
+                        # bool_fg_mask = torch.from_numpy(fg_mask).bool()
+
+                        # bool_fg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["fg"]
+                        # # bool_bg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["bg"]
+
+                        # masked_norm_hidden_states_fg = norm_hidden_states[:, bool_fg_mask, :]
+                        # masked_norm_hidden_states_bg = norm_hidden_states[:, ~bool_fg_mask, :]
+                        # # masked_norm_hidden_states_bg = norm_hidden_states[:, bool_bg_mask, :]
+                        # bool_fg_mask_encoder = torch.cat([bool_fg_mask, bool_fg_mask], dim=0)
+                        # masked_modify_norm_hidden_states_fg = modify_norm_hidden_states[:, bool_fg_mask_encoder, :]
+                        # masked_modify_norm_hidden_states_bg = modify_norm_hidden_states[:, ~bool_fg_mask_encoder, :]
+
+                        bool_fg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["fg"]
+                        bool_bg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["bg"]
+                        bool_fg_mask_encoder = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["fg_encoder"]
+                        bool_bg_mask_encoder = mask_fg[math.sqrt(norm_hidden_states.shape[1])]["bg_encoder"]
+
                         masked_norm_hidden_states_fg = norm_hidden_states[:, bool_fg_mask, :]
-                        masked_norm_hidden_states_bg = norm_hidden_states[:, ~bool_fg_mask, :]
-                        bool_fg_mask_encoder = torch.cat([bool_fg_mask, bool_fg_mask], dim=0)
+                        masked_norm_hidden_states_bg = norm_hidden_states[:, bool_bg_mask, :]
                         masked_modify_norm_hidden_states_fg = modify_norm_hidden_states[:, bool_fg_mask_encoder, :]
-                        masked_modify_norm_hidden_states_bg = modify_norm_hidden_states[:, ~bool_fg_mask_encoder, :]
+                        masked_modify_norm_hidden_states_bg = modify_norm_hidden_states[:, bool_bg_mask_encoder, :]
+
 
                         hidden_states_uc_fg = (
                             self.attn1(
@@ -336,6 +353,9 @@ class ReferenceAttentionControl:
                                 attention_name=block_name+'_attn1_bg',
                             )
                         )
+
+                        print(f"mutual_self_attention attn1 hidden_states_uc_fg shape: {hidden_states_uc_fg.shape}", flush=True)
+                        print(f"mutual_self_attention attn1 hidden_states_uc_bg shape: {hidden_states_uc_bg.shape}", flush=True)
 
                         hidden_states_uc = torch.zeros_like(hidden_states)
                         hidden_states_uc[:, bool_fg_mask, :] = hidden_states_uc[:, bool_fg_mask, :] + hidden_states_uc_fg
