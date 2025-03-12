@@ -683,6 +683,7 @@ class CrossAttnDownBlock3D(nn.Module):
         audio_embedding=None,
         motion_scale=None,
         block_name='unknown_downblock',
+        mask_fg=None,
     ):
         """
         Defines the forward pass for the CrossAttnDownBlock3D class.
@@ -752,14 +753,23 @@ class CrossAttnDownBlock3D(nn.Module):
                 
                 # Call the attention module directly with block_name
                 # This avoids passing block_name through checkpoint
-                def attn_with_block_name(*args, **kwargs):
-                    return attn(*args, block_name=current_block_name, **kwargs)
+                def custom_checkpoint_fn(h_states, enc_h_states, mask, return_dict=False):
+                    # Call attn directly with the proper keyword arguments
+                    return attn(
+                        h_states, 
+                        enc_h_states, 
+                        block_name=current_block_name,
+                        mask_fg=mask,
+                        return_dict=return_dict
+                    )
                 
                 # Now checkpoint without passing block_name
+                # print(f"CrossAttnDownBlock3D Layer {i} mask_fg.keys(): {mask_fg.keys()}", flush=True)
                 hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn_with_block_name, return_dict=False),
+                    create_custom_forward(custom_checkpoint_fn, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
+                    mask_fg,
                 )
 
                 end_event.record()
@@ -1227,6 +1237,7 @@ class CrossAttnUpBlock3D(nn.Module):
         audio_embedding=None,
         motion_scale=None,
         block_name='unknown_upblock',
+        mask_fg=None,
     ):
         """
         Forward pass for the CrossAttnUpBlock3D class.
@@ -1298,16 +1309,24 @@ class CrossAttnUpBlock3D(nn.Module):
                 # Store the block_name locally
                 current_block_name = f'{block_name}_layer_{i}'
                 
-                # Call the attention module directly with block_name
-                # This avoids passing block_name through checkpoint
-                def attn_with_block_name(*args, **kwargs):
-                    return attn(*args, block_name=current_block_name, **kwargs)
+                # Create a single wrapper function that handles both the block_name and mask_fg
+                def custom_checkpoint_fn(h_states, enc_h_states, mask, return_dict=False):
+                    # Call attn directly with the proper keyword arguments
+                    return attn(
+                        h_states, 
+                        enc_h_states, 
+                        block_name=current_block_name,
+                        mask_fg=mask,
+                        return_dict=return_dict
+                    )
                 
                 # Now checkpoint without passing block_name
+                # print(f"CrossAttnUpBlock3D Layer {i} mask_fg.keys(): {mask_fg.keys()}", flush=True)
                 hidden_states, motion_frame = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(attn_with_block_name, return_dict=False),
+                    create_custom_forward(custom_checkpoint_fn, return_dict=False),
                     hidden_states,
                     encoder_hidden_states,
+                    mask_fg,
                 )
 
                 end_event.record()

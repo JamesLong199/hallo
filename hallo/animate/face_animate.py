@@ -265,6 +265,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
         video_length,
         num_inference_steps,
         guidance_scale,
+        mask_fg=None, # added: {64: mask_64, 32: mask_32}
         num_images_per_prompt=1,
         eta: float = 0.0,
         motion_scale: Optional[List[torch.Tensor]] = None,
@@ -318,6 +319,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
             mode="read",
             batch_size=batch_size,
             fusion_blocks="full",
+            # face_masks=face_masks,
         )
 
         num_channels_latents = self.denoising_unet.in_channels
@@ -436,6 +438,7 @@ class FaceAnimatePipeline(DiffusionPipeline):
                     audio_embedding=audio_tensor,
                     motion_scale=motion_scale,
                     return_dict=False,
+                    mask_fg=mask_fg,
                 )[0]
                 end_event.record()
                 end_event.synchronize()

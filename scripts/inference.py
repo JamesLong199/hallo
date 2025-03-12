@@ -35,6 +35,8 @@ import torch
 from diffusers import AutoencoderKL, DDIMScheduler
 from omegaconf import OmegaConf
 from torch import nn
+import cv2
+import numpy as np
 
 import sys
 # Step 1: Get the parent directory path
@@ -169,6 +171,12 @@ def inference_process(args: argparse.Namespace):
         source_image_face_mask, \
         source_image_lip_mask = image_processor.preprocess(
             source_image_path, save_path, config.face_expand_ratio)
+
+    fg_mask = np.load('examples/mask_fg/1.npy').astype(np.uint8)
+    fg_mask_64 = cv2.resize(fg_mask, (64, 64))
+    # fg_mask_32 = cv2.resize(fg_mask, (32, 32))
+    # source_fg_mask = {64: fg_mask_64, 32: fg_mask_32}
+    source_fg_mask = {64: fg_mask_64}
 
     # 3.2 prepare audio embeddings
     sample_rate = config.data.driving_audio.sample_rate
@@ -334,6 +342,7 @@ def inference_process(args: argparse.Namespace):
             pixel_values_full_mask=source_image_full_mask,
             pixel_values_face_mask=source_image_face_mask,
             pixel_values_lip_mask=source_image_lip_mask,
+            mask_fg=source_fg_mask,
             width=img_size[0],
             height=img_size[1],
             video_length=clip_length,
@@ -344,11 +353,12 @@ def inference_process(args: argparse.Namespace):
         )
         
         tensor_result.append(pipeline_output.videos)
-        # Save the current pipeline output videos
-        save_dir = "intermediate"
-        os.makedirs(save_dir, exist_ok=True)
-        tensor_to_video(pipeline_output.videos.squeeze(0), os.path.join(save_dir, f"output_{t}.mp4"), driving_audio_path)
-        assert 0
+
+        # # Save the current pipeline output videos
+        # save_dir = "intermediate"
+        # os.makedirs(save_dir, exist_ok=True)
+        # tensor_to_video(pipeline_output.videos.squeeze(0), os.path.join(save_dir, f"output_{t}.mp4"), driving_audio_path)
+        # assert 0
 
     tensor_result = torch.cat(tensor_result, dim=2)
     tensor_result = tensor_result.squeeze(0)

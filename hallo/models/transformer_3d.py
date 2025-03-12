@@ -161,6 +161,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         timestep=None,
         return_dict: bool = True,
         block_name='unknown_transformer_block',
+        mask_fg=None,
     ):
         """
         Forward pass for the Transformer3DModel.
@@ -216,6 +217,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
             )
             hidden_states = self.proj_in(hidden_states)
 
+        # print(f"transformer_3d 219 mask_fg.keys(): {mask_fg.keys()}", flush=True)
         # Blocks
         motion_frames = []
         for i, block in enumerate(self.transformer_blocks):
@@ -230,6 +232,7 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     video_length=video_length,
                     block_name=f'{block_name}_spatial_{i}',
+                    mask_fg=mask_fg,
                 )
                 motion_frames.append(motion_frame_fea)
             else:

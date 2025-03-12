@@ -555,6 +555,7 @@ class TemporalBasicTransformerBlock(nn.Module):
         timestep=None,
         attention_mask=None,
         video_length=None,
+        mask_fg=None,
     ):
         """
         Forward pass for the TemporalBasicTransformerBlock.

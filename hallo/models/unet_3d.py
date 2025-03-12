@@ -526,6 +526,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
         mid_block_additional_residual: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        mask_fg: Optional[torch.Tensor] = None,
         # start: bool = False,
     ) -> Union[UNet3DConditionOutput, Tuple]:
         r"""
@@ -613,6 +614,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
 
+        # print(f"unet_3d 618 mask_fg.keys(): {mask_fg.keys()}", flush=True)
+
         # down
         down_block_res_samples = (sample,)
         # for downsample_block in self.down_blocks:
@@ -633,6 +636,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     audio_embedding=audio_embedding,
                     motion_scale=motion_scale,
                     block_name=f't{int(timestep_converted):02d}_cross_attn_downblock_{i}',
+                    mask_fg=mask_fg,
                 )
                 end_event.record()
                 end_event.synchronize()
@@ -723,6 +727,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     audio_embedding=audio_embedding,
                     motion_scale=motion_scale,
                     block_name=f't{int(timestep_converted):02d}_cross_attn_upblock_{i}',
+                    mask_fg=mask_fg,
                 )
                 end_event.record()
                 end_event.synchronize()

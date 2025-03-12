@@ -17,6 +17,8 @@ from .attention import BasicTransformerBlock, TemporalBasicTransformerBlock
 import time
 from torch.profiler import profile, record_function, ProfilerActivity
 
+import math
+
 def torch_dfs(model: torch.nn.Module):
     """
     Perform a depth-first search (DFS) traversal on a PyTorch model's neural network architecture.
@@ -74,6 +76,7 @@ class ReferenceAttentionControl:
         reference_adain=False,
         fusion_blocks="midup",
         batch_size=1,
+        # face_masks=None,
     ) -> None:
         """
        Initializes the ReferenceAttentionControl class.
@@ -183,6 +186,7 @@ class ReferenceAttentionControl:
             class_labels: Optional[torch.LongTensor] = None,
             video_length=None,
             block_name='unknown_block',
+            mask_fg=None,
         ):
             
             start_event = torch.cuda.Event(enable_timing=True)
@@ -241,7 +245,8 @@ class ReferenceAttentionControl:
                         **cross_attention_kwargs,
                     )
                 if MODE == "read":
-                    # start_event.record()
+                    start_event.record()
+                    print(f"mutual_self_attention 245 block_name: {block_name}", flush=True)
                     bank_fea = [
                         rearrange(
                             rearrange(
@@ -260,29 +265,102 @@ class ReferenceAttentionControl:
                         "(b s) l c -> b s l c",
                         b=norm_hidden_states.shape[0] // video_length,
                     )[:, 1:, :, :] for d in self.bank]
+                    
+                    # # if 'upblock_2' in block_name or 'upblock_3' in block_name or 'downblock_0_layer_1' in block_name:
+                    # if 'upblock_2' in block_name:
+                    # # if 'upblock_2' in block_name or 'upblock_3' in block_name:
+                    # # if 'downblock_0_layer_1' in block_name:
+                    #     modify_norm_hidden_states = norm_hidden_states
+                    # else:
+                    #     modify_norm_hidden_states = torch.cat(
+                    #         [norm_hidden_states] + bank_fea, dim=1
+                    #     )
                     modify_norm_hidden_states = torch.cat(
-                        [norm_hidden_states] + bank_fea, dim=1
-                    )
-                    # end_event.record()
-                    # end_event.synchronize()
-                    # time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
-                    # print(f"mutual_self_attention before attn1 took {time_elapsed} seconds", flush=True)
-                    start_event.record()
-                    hidden_states_uc = (
-                        self.attn1(
-                            norm_hidden_states,
-                            encoder_hidden_states=modify_norm_hidden_states,
-                            attention_mask=attention_mask,
-                            # save_attention=True,
-                            # block_name='attn1',
-                            # max_attention_size=512,  # Adjust this value based on your GPU memory
-                            # spatial_attention=True,
-                            # spatial_size=64,
-                            # grid_size=32,
-                            attention_name=block_name+'_attn1',
+                            [norm_hidden_states] + bank_fea, dim=1
                         )
-                        + hidden_states
-                    )
+                    end_event.record()
+                    end_event.synchronize()
+                    time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
+                    print(f"mutual_self_attention before attn1 took {time_elapsed} seconds", flush=True)
+                    print(f"mutual_self_attention attn1 modify_norm_hidden_states shape: {modify_norm_hidden_states.shape}", flush=True)
+                    start_event.record()
+                    # print('mutual_self_attention attn1 residual_connection:', self.attn1.residual_connection, flush=True)
+                    
+                    # if mask_fg is not None:
+                    #     print(f"mutual_self_attention attn1 mask_fg is not None:", flush=True)
+                    #     print(f"mutual_self_attention attn1 mask_fg.keys(): {mask_fg.keys()}", flush=True)
+                    #     print(f"mutual_self_attention attn1 math.sqrt(norm_hidden_states.shape[1]): {math.sqrt(norm_hidden_states.shape[1])}", flush=True)
+                    if mask_fg is None or math.sqrt(norm_hidden_states.shape[1]) not in mask_fg:
+                        hidden_states_uc = (
+                            self.attn1(
+                                norm_hidden_states,
+                                encoder_hidden_states=modify_norm_hidden_states,
+                                attention_mask=attention_mask,
+                                # save_attention=True,
+                                # block_name='attn1',
+                                # max_attention_size=512,  # Adjust this value based on your GPU memory
+                                # spatial_attention=True,
+                                # spatial_size=64,
+                                # grid_size=32,
+                                attention_name=block_name+'_attn1',
+                            )
+                            + hidden_states
+                        )
+                    
+                    else:
+                        print(f"mutual_self_attention attn1 mask_fg.keys(): {mask_fg.keys()}", flush=True)
+                    # if face_masks is not None and math.sqrt(norm_hidden_states.shape[1]) in face_masks.keys():
+                        print(f"mutual_self_attention attn1 fg mask size: {math.sqrt(norm_hidden_states.shape[1])}", flush=True)
+                        fg_mask = mask_fg[math.sqrt(norm_hidden_states.shape[1])].flatten() # 64x64 or 32x32
+                        bool_fg_mask = torch.from_numpy(fg_mask).bool()
+                        masked_norm_hidden_states_fg = norm_hidden_states[:, bool_fg_mask, :]
+                        masked_norm_hidden_states_bg = norm_hidden_states[:, ~bool_fg_mask, :]
+                        bool_fg_mask_encoder = torch.cat([bool_fg_mask, bool_fg_mask], dim=0)
+                        masked_modify_norm_hidden_states_fg = modify_norm_hidden_states[:, bool_fg_mask_encoder, :]
+                        masked_modify_norm_hidden_states_bg = modify_norm_hidden_states[:, ~bool_fg_mask_encoder, :]
+
+                        hidden_states_uc_fg = (
+                            self.attn1(
+                                masked_norm_hidden_states_fg,
+                                encoder_hidden_states=masked_modify_norm_hidden_states_fg,
+                                attention_mask=attention_mask,
+                                attention_name=block_name+'_attn1_fg',
+                            )
+                        )
+
+                        hidden_states_uc_bg = (
+                            self.attn1(
+                                masked_norm_hidden_states_bg,
+                                encoder_hidden_states=masked_modify_norm_hidden_states_bg,
+                                attention_mask=attention_mask,
+                                attention_name=block_name+'_attn1_bg',
+                            )
+                        )
+
+                        hidden_states_uc = torch.zeros_like(hidden_states)
+                        hidden_states_uc[:, bool_fg_mask, :] = hidden_states_uc[:, bool_fg_mask, :] + hidden_states_uc_fg
+                        hidden_states_uc[:, ~bool_fg_mask, :] = hidden_states_uc[:, ~bool_fg_mask, :] + hidden_states_uc_bg
+
+                        hidden_states_uc = hidden_states_uc + hidden_states
+                        
+
+                    # else:
+                    #     hidden_states_uc = (
+                    #         self.attn1(
+                    #             norm_hidden_states,
+                    #             encoder_hidden_states=modify_norm_hidden_states,
+                    #             attention_mask=attention_mask,
+                    #             # save_attention=True,
+                    #             # block_name='attn1',
+                    #             # max_attention_size=512,  # Adjust this value based on your GPU memory
+                    #             # spatial_attention=True,
+                    #             # spatial_size=64,
+                    #             # grid_size=32,
+                    #             attention_name=block_name+'_attn1',
+                    #         )
+                    #         + hidden_states
+                    #     )
+                    
                     end_event.record()
                     end_event.synchronize()
                     time_elapsed = start_event.elapsed_time(end_event) / 1000  # ms to s
